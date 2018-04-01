@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <script src="https://google-code-prettify.googlecode.com/svn/loader/run_prettify.js"></script>
+  <link rel="stylesheet" href="css/simpletabs.css">
+  <link rel="stylesheet" href="css/style.css">
+  <title>Code Sample: SQL scripts</title>
+</head>
+<body>
+  <div id="mainContainer">
+    <h1>Code Sample: SQL scripts</h1>
+          
+
+
+        <br>
+          <p>The following SQL strings query Oracle Spatial databases.</p>
+          <br>
+          <hr>
+          <br>
+          <pre class="prettyprint">        
+------------------------------------------------------------------------
+-- get WKT for point representation of a line feature
+------------------------------------------------------------------------
+
+SELECT sdo_util.to_wktgeometry(sdo_geom.sdo_centroid(sdo_geom.sdo_mbr(OBJECT),
+   (SELECT sdo_diminfo
+    FROM mdsys.SDO_GEOM_METADATA_TABLE
+    WHERE sdo_owner = 'MN_NAM1306_CR1_USA_UVT'
+      AND sdo_table_name = 'ARE_SDE'
+      AND rownum=1)))
+FROM MN_NAM1306_CR1_USA_UVT.lin_sde
+WHERE linitemid = 508400000081178 - 508400000000000 -- change second number according to ID structure in the dataset
+
+
+------------------------------------------------------------------------
+-- count line features with different combinations of attributes
+------------------------------------------------------------------------
+
+SELECT count(id_number) AS N2C7,
+       SUM(CASE WHEN (specialrestriction != 0
+                      OR (posrestriction = 1
+                          AND negrestriction = 1)) THEN 1 ELSE 0 END) AS N2C7+Closed_Or_RA,
+       SUM(CASE WHEN ((specialrestriction != 0
+                       OR (posrestriction = 1
+                           AND negrestriction = 1))
+                      AND eat.roughroad = 'Rough Road') THEN 1 ELSE 0 END) AS N2C7+Closed_Or_RA+RR_Yes,
+       SUM(CASE WHEN (NOT (specialrestriction != 0
+                           OR (posrestriction = 1
+                               AND negrestriction = 1))
+                      AND eat.roughroad = 'Rough Road') THEN 1 ELSE 0 END) AS N2C7+Closed_Or_RA+RR_No
+FROM tifnam1304_1_uwa.roa
+LEFT JOIN
+  (SELECT eat.featureid_number AS f,
+          eat.attribute_avalue AS roughroad
+   FROM tifnam1304_1_uwa.eat
+   WHERE eat.Attribute_ACode = 55
+     AND eat.FEATURECLASS = 2
+     AND eat.FEATURETYPE = 2 ) eat ON roa.id_number = eat.f
+WHERE NcExt2_networkclass = 7;
+
+
+------------------------------------------------------------------------
+-- get area features and their related center points, with geo as WKT
+------------------------------------------------------------------------
+
+SELECT ap_name,
+       sdo_util.to_wktgeometry(ap_geo) AS ap_geo_wkt,
+       cos_id,
+       cos_name,
+       sdo_util.to_wktgeometry(cos_geo) AS cos_geo_wkt
+FROM
+  (SELECT nam.name AS ap_name,
+          SDO_AGGR_UNION(SDOAGGRTYPE(are_sdo.geometry, 0.5)) AS ap_geo
+   FROM tifnam1304_1_uvt.reg,
+        tifnam1304_1_uvt.nfi,
+        tifnam1304_1_uvt.nam,
+        tifnam1304_1_uvt.are_sdo
+   WHERE reg.id_number = nfi.featureid_number
+     AND nfi.nameid_number          = nam.nameid_number
+     AND are_sdo.id_number          = reg.id_number
+     AND reg.regiontype             = 16 -- 16 = ADMIN place
+     AND reg.regionsubtype          = 1 -- 1 = C (for admin place)  (2=M)
+     AND nfi.featureclass           = 3 -- 3 = area
+     AND nfi.featuretype            = 4 -- 4 = region
+     AND nam.nametype               = 0 -- 0 = official name
+     AND nam.namesubtype            IN (144) -- (144 = admin place C, 188 = admin place M)
+     AND are_sdo.subtype            = 7161 -- 7161 = regiontype 16 and regionsubtype 1 (admin place C)
+   GROUP BY nam.name ) areafeature
+LEFT JOIN
+  (SELECT poi.id_number AS cos_id,
+          name AS cos_name,
+          poitypespec3 AS settlementtype,
+          nde_sdo.geometry AS cos_geo
+   FROM tifnam1304_1_uvt.poi,
+        tifnam1304_1_uvt.nfi,
+        tifnam1304_1_uvt.nam,
+        TIFNAM1304_1_Uvt.nde_sdo,
+        tifnam1304_1_uvt.apt,
+        tifnam1304_1_uvt.nde
+   WHERE poi.id_number              = nfi.featureid_number
+     AND nfi.nameid_number          = nam.nameid_number
+     AND poi.addresspointid_number  = apt.id_number
+     AND apt.nodeid_number          = nde.id_number
+     AND nde.id_number              = nde_sdo.id_number
+     AND featureclass               = 1
+     AND featuretype                = 7
+     AND poitype                    = 4
+     AND nametype                   = 0
+     AND bitand(poitypespec3,2)     = 2 -- settlement type has at least Admin Place (value 2)
+ ) pointfeature
+ ON sdo_contains(areafeature.ap_geo,pointfeature.cos_geo) = 'TRUE'
+
+          </pre>
+        
+ 
+        
+  </div>
+</body>
+</html>

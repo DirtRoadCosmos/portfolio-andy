@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <script src="https://google-code-prettify.googlecode.com/svn/loader/run_prettify.js"></script>
+  <link rel="stylesheet" href="css/simpletabs.css">
+  <link rel="stylesheet" href="css/style.css">
+  <title>Code Sample: Python</title>
+</head>
+<body>
+  <div id="mainContainer">
+    <h1>Code Sample: Python</h1>
+          
+            <br>
+            <p>The following script detects road crossings where street names change in a suspicious way. The script uses road geometry and attributes to exclude false positives.</p>
+            <br>
+            <hr>
+            <br>
+            <pre class="prettyprint">
+
+from __future__ import division
+from shapely.geometry import mapping, shape, LineString, Point
+import shapefile
+import sys
+import re
+import os
+from math import cos, sin, asin, sqrt, radians, atan2, degrees, fabs, ceil
+from decimal import Decimal
+
+folder = 'C:/Data/names/MX1_FULL/SPLIT'
+
+BEARING_DIST = 10   # meters
+BEARING_THRESHOLD = 45 # degrees
+
+bearing_points = []
+streets_clean = []
+index = 0
+
+def getNameInfo(nameraw):
+
+    name = nameraw[0]
+    nc = nameraw[1]
+    
+    prefix = ''
+    prefixinfo=re.search('(\d{1,3}),(\d{1,3})(?=,3\))', nc)
+    if prefixinfo:
+        prefixstart = int(prefixinfo.group(1))-1
+        prefixend = prefixstart + int(prefixinfo.group(2))
+        prefix = name[prefixstart:prefixend]
+    # print prefix+'.'
+    
+    body = ''
+    bodyinfo=re.search('(\d{1,3}),(\d{1,3})(?=,1\))', nc)
+    if bodyinfo:
+        bodystart = int(bodyinfo.group(1))-1
+        bodyend = bodystart + int(bodyinfo.group(2))
+        body = name[bodystart:bodyend]
+    # print body+'.'
+    
+    # print 'nameinfo: ',
+    # print name, nc, prefixinfo.group(1), prefixinfo.group(2)
+    # pageTitleShort = matchObj.group(2)
+    # sys.exit()
+    
+    nameinfo = [body, prefix]
+    return nameinfo
+
+# def getUniqueCount(list):
+    # if len(bodies) ==
+    # print bodies
+
+    
+def getJoinedNameList(namelist):
+    joined_name_list = []
+    bodies = list(set([n[0] for n in namelist]))  # get unique list of bodies
+    for b in bodies:
+        prefixes = [n[1] for n in namelist if n[0] == b]
+        if len(prefixes) >= 2:
+            joined_name_list.append((b, prefixes))
+    return joined_name_list
+
+def getBodyPrefixIssues(joinednamelist):
+    flag = False
+    info = ''
+    for n in joinednamelist:   # iterate over each body
+        unique_prefix_count = 0
+        body = n[0]
+        prefixes = n[1]
+        unique_prefix_count = len(set(prefixes))
+        if unique_prefix_count >= 2: 
+            flag = True
+            prefix_msg = ''
+            for p in sorted(prefixes):
+                prefix_msg = prefix_msg + '\'' + p + '\', '
+            prefix_msg = prefix_msg[:-2]
+            msg = 'Prefix change: body \'' + body + '\' has prefixes ' + prefix_msg + '. '
+            msg = msg[:-1]
+            info += msg
+
+    return (info, flag)
+    
+def getSideStreetIndicator(joinednamelist):
+    flags = []
+    for body in joinednamelist:   # iterate over each body
+        flag = False
+        prefixes = body[1]
+        nonunique_prefix_count = len(prefixes)   # number of streets involved for this body
+        if nonunique_prefix_count >= 3:
+            unique_prefix_count = len(set(prefixes))
+            if unique_prefix_count < nonunique_prefix_count:   #indicator of one prefix occurring more than once
+                flag = True
+        flags.append(flag)
+    
+    finalFlag = True
+    for f in flags:
+        if f == False:
+            finalFlag = False
+    # print joinednamelist, flags, flag
+    return finalFlag
+
+def getStreetGeoById(id):
+    geos = [s[1] for s in streets_clean if s[0] == id]
+    if len(geos) != 1:
+        return null
+    else:
+        geo = geos[0]
+        return geo
+
+def getSharedNode(lines):
+    if len(lines) != 2:
+        return None
+    else:
+        try:
+            return Point(lines[0].intersection(lines[1]))
+        except AssertionError:
+            return None
+            
+def getDistance(lon1, lat1, lon2, lat2):
+    """
+    Calculate the great circle distance between two points
+    on the earth (specified in decimal degrees)
+    """
+    # convert decimal degrees to radians
+    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+    # haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * asin(sqrt(a))
+    km = 6371 * c
+    m = km * 1000
+    return m
+
+def getBearing(point_from, point_to):
+    angle = atan2(point_to[0] - point_from[0], point_to[1] - point_from[1])
+    return degrees(angle)
+
+def getMidPoint(point1, point2):
+    return Point((point1[0]+point2[0]) / 2, (point1[1]+point2[1]) / 2)
+
+def roundedPoint(point):
+    a = Decimal(str(point.x))
+    b = Decimal(str(point.y))
+    r = Point(round(a,6), round(b,6))
+    return r
+    
+def getBearingAtDistance(line, startPoint, atDist):
+    coordinates = list(line.coords)
+    testPoint = Point(coordinates[0])
+    if getDistance(testPoint.x, testPoint.y, startPoint.x, startPoint.y) > 1:
+        coordinates.reverse()
+    
+    line_meters = getDistance(coordinates[0][0], coordinates[0][1], coordinates[-1][0], coordinates[-1][1])
+    if line_meters < atDist:
+        coord1 = coordinates[-2]
+        coord2 = coordinates[-1]
+        message = 'short line. dist = ' + str(line_meters)
+        bearing = getBearing(coord1, coord2)
+    else:
+        step = 0
+        dist = 0
+        while step < len(coordinates) - 1:        
+            coord1 = coordinates[step]
+            coord2 = coordinates[step + 1]
+            dist = dist + getDistance(coord1[0], coord1[1], coord2[0], coord2[1])
+            message = 'longer line. point between ' + str(step) + ' and ' + str(step+1) + ' with dist=' + ("%.2f" % dist)
+            if dist > atDist:
+                bearing = getBearing(coord1, coord2)
+                break
+            else:
+                step += 1
+    
+    bearing_point = []
+    bearing_point.append(getMidPoint(coord1,coord2))
+    bearing_point.append(("%.2f" % bearing) + ' bearing. ' + message)
+    bearing_points.append(bearing_point)
+    
+    return bearing
+    
+def getCornerCaseIndicator(links):
+    flag = False
+    bearing_change = 0
+    if len(links) == 2:
+        lines = [getStreetGeoById(id) for id in links] # OPTIMIZE. call a function twice and pile returns in a list?
+        sharedNode = getSharedNode(lines)
+        if type(sharedNode) is Point:
+            bearing0 = getBearingAtDistance(lines[0], sharedNode, BEARING_DIST)
+            bearing1 = getBearingAtDistance(lines[1], sharedNode, BEARING_DIST)
+            bearing_change = fabs(fabs(bearing0 - bearing1) - 180)
+            if bearing_change >= BEARING_THRESHOLD:
+                flag = True
+    return (bearing_change, flag)    
+
+def saveBearingPoints():
+    # points
+    w = shapefile.Writer(shapefile.POINT)
+    w.autoBalance = 1 # ensures geometry and attributes match
+    w.field('bearing','C')
+
+    #loop through the data and write the shapefile
+    for b in bearing_points:
+        x = Point(b[0]).x
+        y = Point(b[0]).y
+        bearing = str(b[1])
+        w.point(x, y) #write the geometry
+        w.record(bearing) #write the attributes
+
+    #Save shapefile
+    w.save('NameChangeMinor_log_3_bearings.shp')          
+
+def update_progress(progress):
+    done10 = progress//10
+    remaining10 = 10 - done10
+    print '\r[{0}] {1}%'.format('#'*done10 + '.'*remaining10, progress),
+
+def getDonePct(part, full):
+    return int(ceil((part / full) * 100))
+        
+def process(file, outputfile):
+
+    #clean global variables
+    global streets_clean
+    streets_clean = []
+    
+    global bearing_points
+    bearing_points = []
+    
+    ## GET STREETS
+    sf = shapefile.Reader(file)
+
+    shapes = sf.shapes()
+    if len(shapes) == 0:
+        print 'shapefile has no records'
+        return
+        
+    streets_in = sf.shapeRecords()
+    print '\nreading', len(streets_in), 'records from', file
+
+
+    for street in streets_in:
+        # endpoints = [street.shape.points[0],street.shape.points[-1]]
+        # line = LineString(endpoints)
+        line = LineString(street.shape.points)
+        leftnameraw = street.record[3:5]
+        rightnameraw = street.record[5:7]
+           
+        leftnameinfo = getNameInfo(leftnameraw)
+        leftnamebody = leftnameinfo[0]
+        lefttype = leftnameinfo[1]
+        rightnameinfo = getNameInfo(rightnameraw)
+        rightnamebody = rightnameinfo[0]
+        righttype = rightnameinfo[1]
+        streets_clean.append([street.record[0], line, leftnamebody, lefttype, rightnamebody, righttype])
+
+    ## MAKE NODES
+    nodes = []
+    streets_in_focus = []
+    done = 0
+    done10 = 0
+    nodeid = 0
+    jumppoint = Point()
+
+
+
+    # CONSTRAINT: only keep streets where left name = right name (and store the name only once)
+    print '\n\nonly look at streets where left name matches right name'
+    print 'before:', len(streets_clean)
+    streets_clean = [s[:4] for s in streets_clean if s[2]+s[3] == s[4]+s[5]]
+    print 'after:', len(streets_clean)
+
+    print '\n\nbuilding node list'
+    nodeid = 0
+    nodes_temp = []
+    count = len(streets_clean)
+    for index, s in enumerate(streets_clean):
+        nodes_temp.append(s[1].coords[0])
+        nodes_temp.append(s[1].coords[-1])
+        donepct = getDonePct(index, count)
+        if donepct % 2 == 0:
+            update_progress(donepct)
+    print '\nnodes built:', len(nodes_temp)
+
+    print '\n\ndeduping node index'
+    print 'before:', len(nodes_temp)
+    nodes_temp = list(set(nodes_temp))
+    print 'after:', len(nodes_temp)
+
+    # assign unique IDs to each node
+    nodeid = 0
+    nodes =[]
+    for n in nodes_temp:
+        node = [nodeid, n]
+        nodes.append(node)
+        nodeid += 1
+
+    print '\n\nbuilding link index'
+    links = []
+    count = len(streets_clean)
+    for index, s in enumerate(streets_clean):
+        startnodeid = nodes[nodes_temp.index(s[1].coords[0])][0]
+        endnodeid = nodes[nodes_temp.index(s[1].coords[-1])][0]
+        links.append((s[0], startnodeid, endnodeid))
+        donepct = getDonePct(index, count)
+        if donepct % 2 == 0:
+            update_progress(donepct)
+
+    print '\n\nready to check:'
+    print 'NODES:', len(nodes)
+    print 'STREETS:', len(streets_clean)
+    print 'LINKS:', len(links)
+
+
+    # add road info to nodes
+    print '\n\ncheck each node for errors'
+    hot_nodes = []
+    count = len(nodes)
+    for index, node in enumerate(nodes):
+
+        #figure out if this is a hot node (node bounding streets with same body but different prefix)
+        linked_streets = [s[0] for s in links if s[1] == node[0] or s[2] == node[0]]
+        street_names = [s[2:4] for s in streets_clean if s[0] in linked_streets]    
+        joinedNameList = getJoinedNameList(street_names)   
+        
+        infoSameBodyDiffPrefix = getBodyPrefixIssues(joinedNameList)[0]    
+        hasSameBodyDiffPrefix = getBodyPrefixIssues(joinedNameList)[1]
+        
+        if hasSameBodyDiffPrefix:
+            
+            hot_node = []
+            # add at hot_node index 0: nodeid
+            hot_node.append(node[0])
+            # add at hot_node index 1: node geo
+            hot_node.append(node[1])
+            # add at hot_node index 2: count of bounded streets
+            valence = len(linked_streets)
+            hot_node.append(valence)
+            # add at hot_node index 3: bounded streets, in form of index triples (street, boundingNode1, boundingNode2)
+            hot_node.append(linked_streets)
+            # add at hot_node index 4: names on bounded streets 
+            hot_node.append(street_names)
+            # add at hot_node index 5: body count
+            hot_node.append(joinedNameList)
+            # add at hot_node index 6: likely sidestreet
+            sideStreet = False
+            sideStreet = getSideStreetIndicator(joinedNameList)
+            hot_node.append(sideStreet)  
+            # add at hot_node index 7, 8: v2 corner case
+            cornerCaseValue = 1000
+            cornerCaseFlag = False
+            if valence == 2:
+                cornerCaseTuple = getCornerCaseIndicator(linked_streets)
+                cornerCaseValue = cornerCaseTuple[0]
+                cornerCaseFlag = cornerCaseTuple[1]
+            hot_node.append(cornerCaseValue)
+            hot_node.append(cornerCaseFlag)        
+            # add at hot_node index 9, 10: likelyFP flag and reason
+            likelyFP = False
+            reason = ''
+            if sideStreet == True:
+                reason = 'side street'
+                likelyFP = True
+            if cornerCaseFlag == True:
+                reason = reason + 'corner case angle ' + ("%.0f" % cornerCaseValue) + ' deg'
+                likelyFP = True
+            if reason == '':
+                reason = infoSameBodyDiffPrefix
+            hot_node.append(likelyFP)
+            hot_node.append(reason)
+            
+            # add hot_node to list
+            hot_nodes.append(hot_node)
+            
+        donepct = getDonePct(index, count)
+        if donepct % 2 == 0:
+            update_progress(donepct)
+
+    print '\ncold_node count:', len(nodes)
+    print 'hot_node count:', len(hot_nodes) 
+    print 'roasting_node count:', len([r[9] for r in hot_nodes if r[9] == False])
+
+    # for h in hot_nodes:
+        # print h
+
+    # TODO: 1. dump each type of point into a separate shapefile
+
+    # saveBearingPoints()
+        
+    # Set up shapefile writers and create empty fields
+    w = shapefile.Writer(shapefile.POINT)
+    w.autoBalance = 1 # ensures geometry and attributes match
+    w.field('valence', 'C', '3')
+    w.field('likelyfp', 'C', '10')
+    w.field('message', 'C', '100')
+
+    #loop through the data and write the shapefile
+    if len(hot_nodes) > 0:
+        for h in hot_nodes:
+            x = Point(h[1]).x
+            y = Point(h[1]).y
+            valence = str(h[2])
+            likelyfp = str(h[9])
+            message = str(h[10])
+            w.point(x, y) #write the geometry
+            w.record(valence, likelyfp, message) #write the attributes
+
+        #Save shapefile
+        w.save(outputfile)                    
+
+        print '\n\n' + str(len(hot_nodes)) + ' nodes written to shapefile ' + outputfile + '\n\n'
+    else:
+        print '\n\nno nodes available to write\n\n  ------------------------- \n\n'
+
+
+### base of the code ###
+
+# create violation logs for each file in the directory
+for file in os.listdir(folder):
+    if file[-4:] == '.shp' and file[-12:] != '_changes.shp':
+        input = os.path.join(folder, file)
+        output = os.path.join(folder, file[:-4] + '_prefix_changes.shp')
+        print '\n\n  ------------------------- \nin', input
+        print 'out', output
+        process(input, output)
+    else:
+        print '\nskipping %s' % (os.path.join(folder, file))
+        
+
+print 'merging'
+
+w = shapefile.Writer()
+for file in os.listdir(folder):
+    if file[-12:] == '_changes.shp' and file[:4] != 'temp' and file[:5] != 'final':
+        input = os.path.join(folder, file)
+        r = shapefile.Reader(input)
+        w._shapes.extend(r.shapes())
+        w.records.extend(r.records())        
+
+mergedOutput = os.path.join(folder, 'temp_merged_changes.shp')
+ 
+if len(w.records) > 0:
+    w.fields = list(r.fields)  
+    w.save(mergedOutput)
+    print 'merge done'
+else:
+    print 'nothing to merge'
+
+
+print 'splitting by violation type'
+
+r = shapefile.Reader(mergedOutput)
+points = r.shapeRecords()
+
+print 'starting with %p points' % (len(points))
+
+newPoints1 = [np for np in points if np.record[1] == 'False']
+print 'type1 count = %d' % (len(newPoints1))
+w1 = shapefile.Writer(shapeType = 1)
+w1.autoBalance = 1
+w1.fields = list(r.fields) 
+w1._shapes.extend([rec.shape for rec in newPoints1])
+w1.records.extend([rec.record for rec in newPoints1])
+finalOutput1 = os.path.join(folder, 'temp_1.shp')
+w1.save(finalOutput1)
+print 'temp_1 done'
+
+newPoints2 = [np for np in points if np.record[1] == 'True' and np.record[2] == 'side street']
+print 'type2 count = %d' % (len(newPoints2))
+w2 = shapefile.Writer(shapeType = 1)
+w2.autoBalance = 1
+w2.fields = list(r.fields) 
+w2._shapes.extend([rec.shape for rec in newPoints2])
+w2.records.extend([rec.record for rec in newPoints2])
+finalOutput2 = os.path.join(folder, 'temp_2.shp')
+w2.save(finalOutput2)
+print 'temp_2 done'
+
+newPoints3 = [np for np in points if np.record[1] == 'True' and np.record[2][:11] == 'corner case']
+print 'type3 count = %d' % (len(newPoints3))
+w3 = shapefile.Writer(shapeType = 1)
+w3.autoBalance = 1
+w3.fields = list(r.fields) 
+w3._shapes.extend([rec.shape for rec in newPoints3])
+w3.records.extend([rec.record for rec in newPoints3])
+finalOutput3 = os.path.join(folder, 'temp_3.shp')
+w3.save(finalOutput3)
+print 'temp_3 done'
+
+print 'splitting done'
+
+print 'deduplicating'
+
+for i in range(1,4):
+    r = shapefile.Reader(os.path.join(folder, 'temp_'+str(i)+'.shp'))
+    points = r.shapeRecords()
+    print i
+    count = len(points)
+    print 'initial count:', str(count)
+    newPoints = []
+    for index, p in enumerate(points):
+        donepct = getDonePct(index, count)
+        if donepct % 2 == 0:
+            update_progress(donepct)
+        pnt = Point(p.shape.points[0])
+        dupes = 0
+        for n in newPoints:
+            newPoint = Point(n.shape.points[0])
+            if pnt.x == newPoint.x and pnt.y == newPoint.y:
+                dupes += 1
+                break
+        if dupes == 0:
+            newPoints.append(p)
+    print 'deduped count:', str(len(newPoints))
+    w = shapefile.Writer(shapeType = 1)
+    w.autoBalance = 1
+    w.fields = list(r.fields) 
+    w.fields = list(r.fields) 
+    w._shapes.extend([rec.shape for rec in newPoints])
+    w.records.extend([rec.record for rec in newPoints])
+    w.save(os.path.join(folder, 'final_'+str(i)+'.shp'))
+    print 'final ' + str(i) + ' saved'
+
+
+
+# for rec in newPoints:
+    # w.point(rec.shape)
+    # w.record(rec.record)
+
+# w.fields = list(r.fields)  
+# mergedOutputFinal = os.path.join(folder, 'merged_changes_final.shp')
+# w.save(mergedOutputFinal)
+            </pre>
+  </div>
+
+</body>
+</html>
